@@ -1,0 +1,23 @@
+fastapi
+uvicorn[standard]
+
+# База данных (async)
+SQLAlchemy
+asyncpg
+alembic
+psycopg2-binary
+
+# Конфиги
+pydantic-settings
+python-dotenv
+
+# Аутентификация / безопасность
+passlib
+bcrypt
+python-jose[cryptography]
+PyJWT
+pwdlib
+
+# Валидация и формы
+email-validator
+python-multipart
