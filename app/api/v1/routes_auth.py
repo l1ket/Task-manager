@@ -1,74 +1,75 @@
 from typing import Annotated
 
-from app.api.v1.util.utils import hash_passw, base_check, create_jwt, \
-    verify_pass
-from app.api.v1.db.db_funcs import check_user, create_user, update_token, \
-    get_passw
-from app.core.models import TokenInfo
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy.ext.asyncio import AsyncSession
 
-router = APIRouter()
+from app.api.v1.db import db_funcs as db
+from app.api.v1.util.utils import (
+    create_access_token,
+    hash_password,
+    validate_registration_data,
+    verify_password,
+)
+from app.core.models import MessageResponse, RegisterRequest, TokenResponse
 
-
-class RegParametrs:
-    def __init__(self, email: str, passw: str):
-        self.email = email
-        self.passw = passw
-
-
-class Details:
-    def __init__(self):
-        self.reg = 'email уже существует'
-        self.login = 'Неверное имя пользователя или пароль'
+router = APIRouter(tags=["auth"])
 
 
-@router.post('/auth/register')
-async def register(reg_params: RegParametrs = Depends(RegParametrs)):
-    email, passw = reg_params.email, reg_params.passw
-    if await base_check(email=email, passw=passw):
-        if not await check_user(email=email):
-            passw_h = await hash_passw(paswrd=passw)
-            await create_user(email=email, passw_hash=passw_h)
-            return True
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail=Details().reg
-            )
+@router.post(
+    "/auth/register",
+    response_model=MessageResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def register(
+    payload: RegisterRequest,
+    session: Annotated[AsyncSession, Depends(db.get_session)],
+) -> MessageResponse:
+    validate_registration_data(email=payload.email, password=payload.password)
+
+    existing_user = await db.get_user_by_email(
+        session=session,
+        email=payload.email
+        )
+    if existing_user is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Пользователь с таким email уже существует.",
+        )
+
+    try:
+        await db.create_user(
+            session=session,
+            email=payload.email,
+            password_hash=hash_password(password=payload.password),
+        )
+    except db.UserAlreadyExistsError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Пользователь с таким email уже существует.",
+        )
+
+    return MessageResponse(message="Пользователь успешно зарегистрирован.")
 
 
-@router.post('/auth/login')
-async def login(form_data: Annotated[OAuth2PasswordRequestForm, Depends()]):
-    email, passw = form_data.username, form_data.password
-    if await base_check(email=email, passw=passw):
-        if not await check_user(email=email):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail=Details().login
-            )
-        hashed_p = await get_passw(email=email)
-        if isinstance(hashed_p, str):
-            if await verify_pass(hasded_p=hashed_p, passw=passw):
-                token, info = await create_jwt(username=email)
-                info = TokenInfo(**info)
-                if await update_token(
-                        info=info,
-                        token=token
-                        ):
-                    return {
-                        "access_token": token,
-                        "token_type": "bearer"
-                    }
-                else:
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
-                    )
-            else:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=Details().login
-                )
-        else:
-            raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
-                )
+@router.post("/auth/login", response_model=TokenResponse)
+async def login(
+    form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
+    session: Annotated[AsyncSession, Depends(db.get_session)],
+) -> TokenResponse:
+    user = await db.get_user_by_email(
+        session=session,
+        email=form_data.username
+        )
+    if user is None or not verify_password(
+        hashed_password=user.password_hash,
+        password=form_data.password,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Неверный email или пароль.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    access_token, expires_at = create_access_token(email=user.email)
+    return TokenResponse(access_token=access_token, expires_at=expires_at)

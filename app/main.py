@@ -1,13 +1,12 @@
 from fastapi import FastAPI
 
-from app.api.v1 import routes_auth, routes_tasks
+from app.api.v1.api import router as api_router
+from app.core.models import HealthResponse
 
-app = FastAPI()
-app.include_router(routes_auth.router)
-app.include_router(routes_tasks.router)
+app = FastAPI(title="Task Manager API")
+app.include_router(api_router)
 
 
-@app.get("/")
-async def root():
-    from app.api.v1.util.utils import SECRET_KEY
-    return {"message": SECRET_KEY}
+@app.get("/", response_model=HealthResponse)
+async def root() -> HealthResponse:
+    return HealthResponse()

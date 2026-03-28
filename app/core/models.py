@@ -1,47 +1,51 @@
-from pydantic import BaseModel, ConfigDict
 from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
+
+TaskStatus = Literal["NEW", "IN_PROGRESS", "DONE"]
 
 
-class User(BaseModel):
-    email: str
-    created_at: str
+class HealthResponse(BaseModel):
+    status: str = "ok"
 
 
-class UserInDB(User):
-    password_hash: str
+class MessageResponse(BaseModel):
+    message: str
+
+
+class RegisterRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=8)
 
 
 class TokenInfo(BaseModel):
-    email: str
+    email: EmailStr
     exp: datetime
 
 
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_at: datetime
+
+
 class TaskCreate(BaseModel):
-    title: str
+    title: str = Field(min_length=1, max_length=255)
     description: str | None = None
 
 
-class TaskInDB(TaskCreate):
-    task_id: int
-    status: str
+class TaskUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = None
+    status: TaskStatus | None = None
 
 
-class FullUser(BaseModel):
+class TaskRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    email: str
-    password_hash: str
-    created_at: datetime
-
-
-class FullTasks(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    task_id: int
-    email: str
     title: str
-    description: str
-    status: str
+    description: str | None = None
+    status: TaskStatus
     created_at: datetime

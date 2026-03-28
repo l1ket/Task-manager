@@ -1,23 +1,15 @@
 fastapi
 uvicorn[standard]
-
-# База данных (async)
 SQLAlchemy
 asyncpg
 alembic
 psycopg2-binary
-
-# Конфиги
 pydantic-settings
 python-dotenv
-
-# Аутентификация / безопасность
-passlib
-bcrypt
-python-jose[cryptography]
+pwdlib[argon2]
 PyJWT
-pwdlib
-
-# Валидация и формы
 email-validator
 python-multipart
+httpx
+pytest
+pytest-asyncio

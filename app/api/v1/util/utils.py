@@ -1,20 +1,18 @@
 import re
-import jwt
+from datetime import datetime, timedelta, timezone
 
-from email_validator import validate_email, EmailNotValidError
-from pwdlib import PasswordHash
+import jwt
+from email_validator import EmailNotValidError, validate_email
 from fastapi import HTTPException, status
-from datetime import datetime, timedelta
 from jwt.exceptions import InvalidTokenError
+from pwdlib import PasswordHash
 
 from app.core.config import get_settings
 from app.core.models import TokenInfo
 
 
-Settings = get_settings()
-SECRET_KEY = Settings.SECRET_KEY
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 1440    # 24 hours
+settings = get_settings()
+password_hash = PasswordHash.recommended()
 
 
 def check_mail(mail: str) -> bool:
@@ -25,65 +23,69 @@ def check_mail(mail: str) -> bool:
         return False
 
 
-async def hash_passw(paswrd: str) -> str:
-    password_hash = PasswordHash.recommended()
-    hash_pass = password_hash.hash(password=paswrd)
-    return hash_pass
+def hash_password(password: str) -> str:
+    return password_hash.hash(password=password)
 
 
-def validate_password(paswrd: str) -> bool:
+def validate_password(password: str) -> bool:
     pattern = "^(?=.*?[A-Z])(?=.*?[a-z])(?=.*?[0-9])(?=.*?[#?!@$%^&*-]).{8,}$"
-    return re.match(pattern, paswrd) is not None
+    return re.match(pattern, password) is not None
 
 
-async def base_check(email: str, passw: str):
+def validate_registration_data(email: str, password: str) -> None:
     if check_mail(mail=email):
-        if validate_password(paswrd=passw):
-            return True
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail='Пароль должен соответствовать стандартным правилам'
-                )
+        if validate_password(password=password):
+            return
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Пароль должен содержать минимум 8 символов, заглавную букву, "
+                "строчную букву, цифру и специальный символ."
+            ),
+        )
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail='Некорректный email'
-            )
+            detail="Некорректный email.",
+        )
 
 
-async def verify_pass(hasded_p: str, passw: str):
-    password_hash = PasswordHash.recommended()
-    return password_hash.verify(hash=hasded_p, password=passw)
+def verify_password(hashed_password: str, password: str) -> bool:
+    return password_hash.verify(hash=hashed_password, password=password)
 
 
-async def create_jwt(username: str) -> tuple[str, dict]:
-    expire = datetime.now() + timedelta(
-        minutes=ACCESS_TOKEN_EXPIRE_MINUTES
+def create_access_token(email: str) -> tuple[str, datetime]:
+    expires_at = datetime.now(timezone.utc) + timedelta(
+        minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
     )
-    encode = {'email': username, 'exp': expire}
-    encoded_jwt = jwt.encode(encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt, encode
+    payload = {"email": email, "exp": expires_at}
+    encoded_jwt = jwt.encode(
+        payload,
+        settings.SECRET_KEY,
+        algorithm=settings.JWT_ALGORITHM,
+    )
+    return encoded_jwt, expires_at
 
 
-async def get_jwt(token: str) -> TokenInfo:
+def get_jwt(token: str) -> TokenInfo:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
+        detail="Не удалось проверить учетные данные.",
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        email = payload.get('email')
+        payload = jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
+        )
+        email = payload.get("email")
         if email is None:
             raise credentials_exception
-        exp = payload.get('exp')
+        exp = payload.get("exp")
         if exp is None:
             raise credentials_exception
 
-        token_info = TokenInfo(email=email, exp=exp)
-        return token_info
+        return TokenInfo(email=email, exp=exp)
     except InvalidTokenError:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
+        raise credentials_exception

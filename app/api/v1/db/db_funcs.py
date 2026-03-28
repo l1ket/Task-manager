@@ -1,249 +1,116 @@
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy import Select, Update, Delete
+from collections.abc import AsyncIterator
 
-from app.api.v1.db.db_models import Base, UsersDB, UserTokens, Tasks
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+
+from app.api.v1.db.db_models import Base, Tasks, UsersDB
 from app.core.config import get_settings
-from app.core.models import TokenInfo, TaskInDB
-
-Settings = get_settings()
-USER = Settings.POSTGRES_USER
-PASW = Settings.POSTGRES_PASSWORD
-PORTS = Settings.PORTS
-DB_NAME = Settings.POSTGRES_DB
-
-DATABASE_URL = "postgresql+asyncpg://" + \
-    f"{USER}:{PASW}@postgres:{PORTS}/{DB_NAME}"
+from app.core.models import TaskCreate, TaskUpdate
 
 
-async def create_engine():
-    engine = create_async_engine(
-        DATABASE_URL,
-        echo=True
-    )
-    return engine
+class UserAlreadyExistsError(Exception):
+    pass
 
 
-async def create_session():
-    engine = await create_engine()
-    session = AsyncSession(engine)
-    return session
+settings = get_settings()
+engine = create_async_engine(
+    settings.async_database_url,
+    echo=settings.DB_ECHO,
+)
+SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 
-async def create_tables():
-    engine = await create_engine()
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+async def get_session() -> AsyncIterator[AsyncSession]:
+    async with SessionLocal() as session:
+        yield session
 
 
-async def create_user(email: str, passw_hash: str) -> None:
-    session = await create_session()
-    try:
-        user = UsersDB(
-            email=email,
-            password_hash=passw_hash
-            )
-        session.add(user)
-        await session.commit()
-    except Exception as e:
-        print('\n\n\n ERROR', e)
-    finally:
-        await session.close()
+async def create_tables() -> None:
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
 
 
-async def check_user(email: str):
-    session = await create_session()
-    try:
-        ans = await session.execute(
-            Select(UsersDB).where(UsersDB.email == email)
-            )
-        ans = ans.scalar_one_or_none()
-        if ans:
-            return True
-        else:
-            return False
-    except Exception as e:
-        print('\n\n\n ERROR', e)
-        return False
-    finally:
-        await session.close()
-
-
-async def check_user_token(email: str):
-    session = await create_session()
-    try:
-        ans = await session.execute(
-            Select(UserTokens).where(UserTokens.email == email)
-            )
-        ans = ans.scalar_one_or_none()
-        if ans:
-            return True
-        else:
-            return False
-    except Exception as e:
-        print('\n\n\n ERROR', e)
-        return False
-    finally:
-        await session.close()
-
-
-async def update_token(
-        info: TokenInfo,
-        token: str
-        ):
-    session = await create_session()
-    try:
-        ans = await check_user_token(email=info.email)
-        if ans:
-            ans = await session.execute(
-                Update(UserTokens).where(
-                    UserTokens.email == info.email
-                    ).values(
-                    {
-                        'token': token,
-                        'expired': info.exp
-                    }))
-            await session.commit()
-            return True
-        else:
-            tokens = UserTokens(
-                email=info.email,
-                token=token,
-                expired=info.exp
-            )
-            session.add(tokens)
-            await session.commit()
-            return True
-    except Exception as e:
-        print('\n\n\n ERROR', e)
-        return False
-    finally:
-        await session.close()
-
-
-async def get_passw(email: str):
-    session = await create_session()
-    try:
-        ans = await session.execute(
-            Select(UsersDB).where(UsersDB.email == email)
-            )
-        ans = ans.scalar_one_or_none()
-        if ans is None:
-            return False
-        ans_c: UsersDB = ans
-        if ans:
-            return ans_c.password_hash
-        else:
-            return False
-    except Exception as e:
-        print('\n\n\n ERROR', e)
-        return False
-    finally:
-        await session.close()
-
-
-async def get_tasks(email: str):
-    session = await create_session()
-    try:
-        ans = await session.execute(
-            Select(Tasks).where(Tasks.email == email)
-            )
-        ans = ans.scalars().fetchall()
-        return ans
-    except Exception as e:
-        print('\n\n\n ERROR', e)
-        return False
-    finally:
-        await session.close()
-
-
-async def create_task_in_db(
+async def get_user_by_email(
+    session: AsyncSession,
     email: str,
-    info: TaskInDB
-):
-    session = await create_session()
+) -> UsersDB | None:
+    result = await session.execute(
+        select(UsersDB).where(UsersDB.email == email)
+        )
+    return result.scalar_one_or_none()
+
+
+async def create_user(
+    session: AsyncSession,
+    email: str,
+    password_hash: str,
+) -> UsersDB:
+    user = UsersDB(email=email, password_hash=password_hash)
+    session.add(user)
     try:
-        taks = Tasks(
-            email=email,
-            title=info.title,
-            description=info.description,
-            status=info.status,
-            task_id=info.task_id
-            )
-        session.add(taks)
         await session.commit()
-        return True
-    except Exception as e:
-        print('\n\n\n ERROR', e)
-        return False
-    finally:
-        await session.close()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise UserAlreadyExistsError from exc
+
+    await session.refresh(user)
+    return user
 
 
-async def get_task(email: str, task_id: int):
-    session = await create_session()
-    try:
-        ans = await session.execute(
-            Select(Tasks).where(
-                Tasks.email == email,
-                Tasks.task_id == task_id)
-            )
-        ans = ans.scalar_one_or_none()
-        return ans
-    except Exception as e:
-        print('\n\n\n ERROR', e)
-        return False
-    finally:
-        await session.close()
+async def list_tasks(session: AsyncSession, email: str) -> list[Tasks]:
+    result = await session.execute(
+        select(Tasks).where(Tasks.email == email).order_by(Tasks.id)
+    )
+    return list(result.scalars().all())
+
+
+async def create_task(
+    session: AsyncSession,
+    email: str,
+    payload: TaskCreate,
+) -> Tasks:
+    task = Tasks(
+        email=email,
+        title=payload.title,
+        description=payload.description,
+        status="NEW",
+    )
+    session.add(task)
+    await session.commit()
+    await session.refresh(task)
+    return task
+
+
+async def get_task_for_user(
+    session: AsyncSession,
+    email: str,
+    task_id: int,
+) -> Tasks | None:
+    result = await session.execute(
+        select(Tasks).where(Tasks.email == email, Tasks.id == task_id)
+    )
+    return result.scalar_one_or_none()
 
 
 async def update_task(
-    email: str,
-    task_id: int,
-    title: str | None = None,
-    status: str | None = None,
-    description: str | None = None
-        ):
-    session = await create_session()
+    session: AsyncSession,
+    task: Tasks,
+    payload: TaskUpdate,
+) -> Tasks:
+    update_data = payload.model_dump(exclude_unset=True)
+    for field_name, value in update_data.items():
+        setattr(task, field_name, value)
 
-    update_data = {}
-    if title is not None:
-        update_data["title"] = title
-    if status is not None:
-        update_data["status"] = status
-    if description is not None:
-        update_data["description"] = description
-
-    if not update_data:
-        return None
-
-    try:
-        query = Update(Tasks).where(
-                Tasks.email == email,
-                Tasks.task_id == task_id).values(
-                    **update_data
-                )
-        await session.execute(query)
-        await session.commit()
-    except Exception as e:
-        print('\n\n\n ERROR', e)
-        return False
-    finally:
-        await session.close()
+    await session.commit()
+    await session.refresh(task)
+    return task
 
 
-async def delete_task(
-    email: str,
-    task_id: int
-        ):
-    session = await create_session()
-    try:
-        query = Delete(Tasks).where(
-                Tasks.email == email,
-                Tasks.task_id == task_id)
-        await session.execute(query)
-        await session.commit()
-    except Exception as e:
-        print('\n\n\n ERROR', e)
-        return False
-    finally:
-        await session.close()
+async def delete_task(session: AsyncSession, task: Tasks) -> None:
+    await session.delete(task)
+    await session.commit()
